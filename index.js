@@ -8,6 +8,38 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
 });
 
+// ユーザーごとの利用回数記録マップ { userId: { count: number, date: string } }
+const userUsageMap = new Map();
+
+// 今日の日付文字列（日本時間 YYYY-MM-DD）を取得する関数
+function getTodayString() {
+  const options = { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' };
+  const formatter = new Intl.DateTimeFormat('ja-JP', options);
+  return formatter.format(new Date());
+}
+
+// ユーザーの本日利用回数をチェック＆カウントアップする関数（上限3回）
+function checkAndUpdateUsage(userId) {
+  const today = getTodayString();
+  const userData = userUsageMap.get(userId);
+
+  if (!userData || userData.date !== today) {
+    // 初回利用、または日付が変わっている場合は1回目として記録
+    userUsageMap.set(userId, { count: 1, date: today });
+    return { allowed: true, remaining: 2 };
+  }
+
+  if (userData.count >= 3) {
+    // すでに3回達している場合
+    return { allowed: false, remaining: 0 };
+  }
+
+  // 2回目・3回目の利用
+  userData.count += 1;
+  userUsageMap.set(userId, userData);
+  return { allowed: true, remaining: 3 - userData.count };
+}
+
 async function getUserPoints(userId) {
   try {
     const url = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=out:json`;
@@ -40,7 +72,7 @@ client.once('ready', async () => {
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId('check_points')
-          .setLabel('ポイントを確認する')
+          .setLabel('ポイントを確認する (1日3回まで)')
           .setStyle(ButtonStyle.Primary)
           .setEmoji('🎁')
       );
@@ -50,7 +82,7 @@ client.once('ready', async () => {
 
       if (!existingBotMsg) {
         await channel.send({
-          content: "👇 **以下のボタンを押すと、あなたの現在の合計ポイントが確認できます**",
+          content: "👇 **以下のボタンを押すと、あなたの現在の合計ポイントが確認できます（1日3回まで）**",
           components: [row]
         });
         console.log("ポイント確認ボタンを送信しました。");
@@ -66,10 +98,22 @@ client.on('interactionCreate', async interaction => {
 
   if (interaction.customId === 'check_points') {
     const userId = interaction.user.id;
+
+    // 回数制限チェック（1日3回）
+    const usage = checkAndUpdateUsage(userId);
+
+    if (!usage.allowed) {
+      await interaction.reply({
+        content: `⚠️ <@${userId}> さん、本日のポイント確認上限（1日3回）に達しました。\n日付が変わってから（明日）再度ご確認ください！`,
+        ephemeral: true
+      });
+      return;
+    }
+
     const points = await getUserPoints(userId);
 
     await interaction.reply({
-      content: `📊 **現在の合計ポイント**\n<@${userId}> さんの合計ポイントは **${points} pt** です！`,
+      content: `📊 **現在の合計ポイント**\n<@${userId}> さんの合計ポイントは **${points} pt** です！\n*(本日の残り確認可能回数: あと ${usage.remaining} 回)*`,
       ephemeral: true
     });
   }
